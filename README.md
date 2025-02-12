@@ -5,7 +5,7 @@
 
 # FastAPI watsonx-Compatible Gateway
 
-This repository hosts a **FastAPI** application that forwards requests in the OpenAI-style `/v1/completions` format to **IBM watsonx.ai**. The gateway allows users to send requests using a format compatible with OpenAI but interacts with **watsonx.ai** models instead.
+This repository hosts a **FastAPI** application that forwards requests in the OpenAI-style `/v1/chat/completions` format to **IBM watsonx.ai**. The gateway allows users to send requests using a format compatible with OpenAI but interacts with **watsonx.ai** models instead.
 
 ---
 
@@ -178,12 +178,13 @@ docker logs -f watsonxai-endpoint
 After starting the application, you can test it with a curl command:
 
 ```bash
-curl http://127.0.0.1:8080/v1/completions \
+curl http://127.0.0.1:8080/v1/chat/completions \
 -H "Content-Type: application/json" \
 -d '{
-  "prompt": "Explain watsonx.ai advantages.",
-  "max_tokens": 50,
-  "temperature": 0.7
+  "messages": [{"role":"systerm", "content":"Explain watsonx.ai advantages in chinese."}],
+  "max_tokens": 950,
+  "temperature": 0.7,
+  "model": "mistralai/mistral-large"
 }'|jq
 ```
 
@@ -206,7 +207,7 @@ ilab data generate \
 <summary> <b>Example output</b></summary>
 
 ```json
-INFO:     172.17.0.1:44028 - "POST /v1/completions HTTP/1.1" 200 OK
+INFO:     172.17.0.1:44028 - "POST /v1/chat/completions HTTP/1.1" 200 OK
 2024-10-02 08:17:35 - INFO - watsonxai-endpoint - Received a Watsonx completion request.
 2024-10-02 08:17:35 - DEBUG - watsonxai-endpoint - Prompt: '<|system|>
 You are an AI language model developed by IBM Research. You are a cautious assistant. You carefully follow instructions. You are helpful and harmless and you follow ethical guidelines and ..., Max Tokens: 2048, Temperature: 0.7, Model ID: meta-llama/llama-3-405b-instruct
@@ -242,7 +243,7 @@ You are an AI language model developed by IBM Research. You are a cautious assis
 
 ## API Reference
 
-This gateway mimics the OpenAI `/v1/completions` endpoint while forwarding requests to IBM watsonx.ai. It supports typical parameters like `prompt`, `max_tokens`, and `temperature`, while ensuring compatibility with the watsonx.ai text generation model.
+This gateway mimics the OpenAI `/v1/chat/completions` endpoint while forwarding requests to IBM watsonx.ai. It supports typical parameters like `prompt`, `max_tokens`, and `temperature`, while ensuring compatibility with the watsonx.ai text generation model.
 
 ---
 

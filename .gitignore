@@ -2,3 +2,4 @@
 venv
 .env
 fastapi-watsonx/__pycache__
+.vscode

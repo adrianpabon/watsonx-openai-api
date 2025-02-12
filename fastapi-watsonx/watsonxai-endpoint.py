@@ -121,7 +121,9 @@ def get_iam_token():
 def format_debug_output(request_data):
     headers = ["by API", "Parameter", "API Value", "Default Value", "Explanation"]
     table = []
-
+    presence_penalty = request_data.get("presence_penalty", 1)
+    if presence_penalty < 1:
+        presence_penalty = presence_penalty + 1
     # Define the parameters excluding "Prompt" and add explanations
     parameters = [
         ("Model ID", request_data.get("model", "ibm/granite-20b-multilingual"), "ibm/granite-20b-multilingual",
@@ -133,7 +135,7 @@ def format_debug_output(request_data):
         ("Temperature", request_data.get("temperature", 0.2), 0.2,
         "Controls the randomness of the generated output. Higher values make the output more random."),
 
-        ("Presence Penalty", request_data.get("presence_penalty", 1), 1,
+        ("Presence Penalty", presence_penalty, 1,
         "Penalizes new tokens based on whether they appear in the text so far. Positive values encourage the model to talk about new topics."),
 
         ("top_p", request_data.get("top_p", 1), 1,
@@ -255,9 +257,10 @@ def convert_watsonx_to_openai_format(watsonx_data):
     }
 
 
-# FastAPI route for /v1/models
-@app.get("/v1/models")
+# FastAPI route for /v1/chat/models
+@app.get("/v1/chat/models")
 async def fetch_models():
+    logger.info("get the model list")
     try:
         models = get_watsonx_models()  # Fetch the Watsonx models data
         logger.debug(f"Available models: {models}")
@@ -271,9 +274,10 @@ async def fetch_models():
         logger.error(f"Error fetching models: {err}")
         raise HTTPException(status_code=500, detail=f"Error fetching models: {err}")
 
-# FastAPI route for /v1/models/{model_id}
-@app.get("/v1/models/{model_id}")
+# FastAPI route for /v1/chat/models/{model_id}
+@app.get("/v1/chat/models/{model_id}")
 async def fetch_model_by_id(model_id: str):
+    logger.info(f"get the model with id {model_id}")
     try:
         # Fetch the full list of models from Watsonx
         models = get_watsonx_models()
@@ -304,23 +308,27 @@ async def fetch_model_by_id(model_id: str):
         logger.error(f"Error fetching model by ID: {err}")
         raise HTTPException(status_code=500, detail=f"Error fetching model by ID: {err}")
 
-@app.post("/v1/completions")
+@app.post("/v1/chat/completions")
 async def watsonx_completions(request: Request):
     logger.info("Received a Watsonx completion request.")
 
     # Parse the incoming request as JSON
     try:
         request_data = await request.json()
+        logger.info(f"request_data is {request_data}")
     except Exception as e:
         logger.error(f"Error parsing request: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON request body")
 
     # Extract parameters from request or set default values
-    prompt = request_data.get("prompt", "")
+    messages = request_data.get("messages", [])
+    prompt = messages.pop(0).get("content", "hello")
+    if len(messages) > 0:
+        prompt = prompt + f"\n以下是聊天历史：\n {str(messages)} \n以上是聊天历史：\n "
 
     # Ensure that prompt is a string; if it's a list, join it into a single string
     if isinstance(prompt, list):
-        prompt = " ".join(prompt)
+        prompt = str(prompt)
     elif not isinstance(prompt, str):
         logger.error(f"Invalid type for 'prompt': {type(prompt)}. Expected a string or list of strings.")
         raise HTTPException(status_code=400, detail="Invalid type for 'prompt'. Expected a string or list of strings.")
@@ -332,6 +340,8 @@ async def watsonx_completions(request: Request):
     best_of = request_data.get("best_of", 1)
     n = request_data.get("n", 1)
     presence_penalty = request_data.get("presence_penalty", 1)
+    if presence_penalty < 1:
+        presence_penalty = presence_penalty + 1
     echo = request_data.get("echo", False)
     logit_bias = request_data.get("logit_bias", None)
     logprobs = request_data.get("logprobs", None)
@@ -414,7 +424,9 @@ async def watsonx_completions(request: Request):
         "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
         "choices": [
             {
-                "text": generated_text,
+                "message":{"role": "assistant",
+                           "content": generated_text,
+                           "refusal": None},
                 "index": 0,
                 "logprobs": None,
                 "finish_reason": results[0].get("stop_reason", "length")
