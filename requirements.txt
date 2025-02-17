@@ -4,3 +4,4 @@ requests
 streamlit
 tabulate
 ibm_watsonx_ai
+llama-index-llms-ibm

@@ -7,6 +7,8 @@ import logging
 import json
 from tabulate import tabulate
 from ibm_watsonx_ai import APIClient, Credentials
+from llama_index.core.llms import ChatMessage
+from llama_index.llms.ibm import WatsonxLLM
 
 app = FastAPI()
 
@@ -84,6 +86,28 @@ if not PROJECT_ID:
 # Global variables to cache the IAM token and expiration time
 cached_token = None
 token_expiration = 0
+
+class responseMessage():
+    role: str = "assistant"
+    content: str
+    refusal: str = None
+
+class choice():
+    message: responseMessage
+    index: int = 0
+    logprobs: str = None
+    finish_reason: str = "stop"
+    delta: responseMessage
+
+class completionResponse():
+    id: str
+    object: str =  "chat.completion"
+    created: int
+    model: str
+    system_fingerprint: str
+    choices: list[choice]
+    usage: dict
+
 
 # Function to fetch the IAM token
 def get_iam_token():
@@ -308,7 +332,7 @@ async def fetch_model_by_id(model_id: str):
         logger.error(f"Error fetching model by ID: {err}")
         raise HTTPException(status_code=500, detail=f"Error fetching model by ID: {err}")
 
-@app.post("/v1/chat/completions")
+@app.post("/v1/completions")
 async def watsonx_completions(request: Request):
     logger.info("Received a Watsonx completion request.")
 
@@ -416,29 +440,103 @@ async def watsonx_completions(request: Request):
         logger.warning("No generated text found in Watsonx.ai response.")
 
     # Prepare the OpenAI-compatible response with model name
-    openai_response = {
-        "id": f"cmpl-{str(uuid.uuid4())[:12]}",
-        "object": "text_completion",
-        "created": int(time.time()),
-        "model": model_id,
-        "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
-        "choices": [
-            {
-                "message":{"role": "assistant",
-                           "content": generated_text,
-                           "refusal": None},
-                "index": 0,
-                "logprobs": None,
-                "finish_reason": results[0].get("stop_reason", "length")
-            }
-        ],
-        "usage": {
+    openai_response =  completionResponse()
+    ch = choice()
+    message = responseMessage()
+    # message.content = generated_text
+    message.content = "hello"
+    ch.index = 0
+    ch.message = message
+    ch.delta = message
+    openai_response.id = f"cmpl-{str(uuid.uuid4())[:12]}"
+    openai_response.created = int(time.time())
+    openai_response.model = model_id
+    openai_response.system_fingerprint = f"fp_{str(uuid.uuid4())[:12]}"
+    openai_response.choices = [ch]
+
+    openai_response.usage = {
             "prompt_tokens": results[0].get("input_token_count", 5),
             "completion_tokens": results[0].get("generated_token_count", 7),
             "total_tokens": results[0].get("input_token_count", 5) + results[0].get("generated_token_count", 7)
         }
-    }
+
+    # openai_response = {
+    #     "id": f"cmpl-{str(uuid.uuid4())[:12]}",
+    #     # "object": "text_completion",
+    #     "object": "chat.completion",
+    #     "created": int(time.time()),
+    #     "model": model_id,
+    #     "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
+    #     "choices": [
+    #         {
+    #             "message":{"role": "assistant",
+    #                        "content": generated_text,
+    #                        "refusal": None},
+    #             "delta": {"role": "assistant",
+    #                        "content": generated_text,
+    #                        "refusal": None},
+    #             "index": 0,
+    #             "logprobs": None,
+    #             # "finish_reason": results[0].get("stop_reason", "length")
+    #              "finish_reason": "stop"
+    #         }
+    #     ],
+    #     "usage": {
+    #         "prompt_tokens": results[0].get("input_token_count", 5),
+    #         "completion_tokens": results[0].get("generated_token_count", 7),
+    #         "total_tokens": results[0].get("input_token_count", 5) + results[0].get("generated_token_count", 7)
+    #     }
+    # }
 
     # Return the response
-    logger.debug(f"Returning OpenAI-compatible response: {json.dumps(openai_response, indent=4)}")
-    return openai_response
+    logger.info(f"Returning OpenAI-compatible response: {openai_response.choices[0].delta.content}")
+    return [openai_response]
+
+@app.post("/v1/chat/completions")
+async def watsonx_chat_completions(request: Request):
+    logger.info("Received a Watsonx chat completion request.")
+    # Parse the incoming request as JSON
+    try:
+        request_data = await request.json()
+        logger.info(f"request_data is {request_data}")
+    except Exception as e:
+        logger.error(f"Error parsing request: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON request body")
+
+    model_id = request_data.get("model", "ibm/granite-20b-multilingual")  # Default model_id
+    max_tokens = request_data.get("max_tokens", 2048)
+    temperature = request_data.get("temperature", 0.2)
+    presence_penalty = request_data.get("presence_penalty", 1)
+    if presence_penalty < 1:
+        presence_penalty = presence_penalty + 1
+    seed = request_data.get("seed", None)
+    top_p = request_data.get("top_p", 1)
+
+    # Debugging: Log the provided parameters and their sources
+    # logger.debug("Parameter source debug:")
+    # logger.debug("\n" + format_debug_output(request_data))
+
+    watsonx_llm = WatsonxLLM(
+        model_id=model_id,
+        # url=WATSONX_URL_CHAT,
+        url=WATSONX_URLS.get(region),
+        project_id=PROJECT_ID,
+        temperature=temperature,
+        max_new_tokens=max_tokens,
+        repetition_penalty=presence_penalty,
+        random_seed=seed,
+        apikey=IBM_API_KEY,
+        top_p=top_p
+    )
+
+    # Extract parameters from request or set default values
+    messages = [ChatMessage(**t) for t in request_data.get("messages", [])]
+    response = watsonx_llm.chat(
+        messages, max_new_tokens=max_tokens, decoding_method="greedy"
+    )
+    logger.info(f"Returning OpenAI-compatible ChatResponse: {response}")
+    return response
+    # return result
+    # for chunk in await watsonx_llm.stream_chat(messages):
+    #     print(chunk.delta, end="")
+    #     yield chunk.delta
