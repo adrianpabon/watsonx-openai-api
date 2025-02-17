@@ -181,7 +181,7 @@ After starting the application, you can test it with a curl command:
 curl http://127.0.0.1:8080/v1/chat/completions \
 -H "Content-Type: application/json" \
 -d '{
-  "messages": [{"role":"systerm", "content":"Explain watsonx.ai advantages in chinese."}],
+  "messages": [{"role":"user", "content":"Explain watsonx.ai advantages in chinese."}],
   "max_tokens": 950,
   "temperature": 0.7,
   "model": "mistralai/mistral-large"
