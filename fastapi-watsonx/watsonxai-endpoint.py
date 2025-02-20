@@ -535,7 +535,7 @@ async def watsonx_chat_completions(request: Request):
         messages, max_new_tokens=max_tokens, decoding_method="greedy"
     )
     logger.info(f"Returning OpenAI-compatible ChatResponse: {response}")
-    return response
+    return response.raw
     # return result
     # for chunk in await watsonx_llm.stream_chat(messages):
     #     print(chunk.delta, end="")

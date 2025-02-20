@@ -107,7 +107,7 @@ pip install --upgrade pip
 
 **install pip packages:**
 ```bash
-pip install --no-cache-dir fastapi uvicorn requests streamlit tabulate
+pip install --no-cache-dir fastapi uvicorn requests streamlit tabulate llama-index-llms-ibm
 ```
 
 ```bash
@@ -178,7 +178,7 @@ docker logs -f watsonxai-endpoint
 After starting the application, you can test it with a curl command:
 
 ```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
+curl http://127.0.0.1:8090/v1/chat/completions \
 -H "Content-Type: application/json" \
 -d '{
   "messages": [{"role":"user", "content":"Explain watsonx.ai advantages in chinese."}],
