@@ -469,6 +469,7 @@ async def stream_watsonx_completions(watsonx_payload, headers):
                                         # 提取内容
                                         delta = choice.get("delta", {})
                                         if "content" in delta:
+                                            logger.info(delta["content"])
                                             yield delta["content"].encode('utf-8')
                                         
                                         # 处理完成信号
@@ -482,11 +483,10 @@ async def stream_watsonx_completions(watsonx_payload, headers):
                     event.clear()
                     
         except httpx.HTTPStatusError as err:
-            error_message = err.response.text()
-            logger.error(f"Watsonx.ai API错误: {err} | 响应: {error_message}")
+            logger.error(f"Watsonx.ai API错误: {err}")
             raise HTTPException(
                 status_code=err.response.status_code,
-                detail=f"Watsonx.ai API错误: {error_message}"
+                detail=f"Watsonx.ai API错误: {err}"
             )
         except httpx.RequestError as err:
             logger.error(f"连接异常: {err}")
