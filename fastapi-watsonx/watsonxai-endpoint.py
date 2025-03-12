@@ -440,66 +440,23 @@ async def watsonx_completions(request: Request):
 
 async def stream_watsonx_completions(watsonx_payload, headers):
     logger.info("Stream chat completion request.")
-    buffer = ""
-    event = {}
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(
-                WATSONX_URL_STREAM,
-                json=watsonx_payload,
-                headers=headers
-            )
-            response.raise_for_status()
-            
-            async for raw_chunk in response.aiter_bytes():
-                chunk = raw_chunk.decode('utf-8')
-                buffer += chunk
-                
-                while "\n\n" in buffer:
-                    event_raw, buffer = buffer.split("\n\n", 1)
-                    
-                    for line in event_raw.splitlines():
-                        if line.startswith("data:"):
-                            try:
-                                data = json.loads(line[5:].strip())
-                                
-                                # 处理 choices 列表结构
-                                if data.get("choices"):
-                                    for choice in data["choices"]:
-                                        # 提取内容
-                                        delta = choice.get("delta", {})
-                                        if "content" in delta:
-                                            logger.info(delta["content"])
-                                            yield delta["content"].encode('utf-8')
-                                        
-                                        # 处理完成信号
-                                        if choice.get("finish_reason") == "stop":
-                                            yield b"[DONE]"
-                                            
-                            except json.JSONDecodeError as e:
-                                logger.warning(f"JSON解析失败: {line} | 错误: {e}")
-                    
-                    # 清空当前事件
-                    event.clear()
-                    
-        except httpx.HTTPStatusError as err:
-            logger.error(f"Watsonx.ai API错误: {err}")
-            raise HTTPException(
-                status_code=err.response.status_code,
-                detail=f"Watsonx.ai API错误: {err}"
-            )
-        except httpx.RequestError as err:
-            logger.error(f"连接异常: {err}")
-            raise HTTPException(
-                status_code=503,
-                detail="无法连接AI服务，请稍后重试"
-            )
-        except Exception as err:
-            logger.error(f"未知错误: {err}")
-            raise HTTPException(
-                status_code=500,
-                detail="流式处理发生意外错误"
-            )
+            # Send the request to Watsonx.ai
+            response = await client.post(WATSONX_URL_STREAM, json=watsonx_payload, headers=headers)
+            response.raise_for_status()  # This will raise an HTTPError for 4xx/5xx responses
+            async for chunk in response.aiter_bytes():
+                logger.debug(f"Received response from Watsonx.ai: {chunk}")
+                yield chunk
+        except requests.exceptions.HTTPError as err:
+            # Capture and log the full response from Watsonx.ai
+            error_message = response.text  # Watsonx should return a more detailed error message
+            logger.error(f"HTTPError: {err}, Response: {error_message}")
+            raise HTTPException(status_code=response.status_code, detail=f"Error from Watsonx.ai: {error_message}")
+        except requests.exceptions.RequestException as err:
+            # Generic request exception handling
+            logger.error(f"RequestException: {err}")
+            raise HTTPException(status_code=500, detail=f"Error calling Watsonx.ai: {err}")
 
 async def non_stream_watsonx_completions(watsonx_payload, headers):
     try:
