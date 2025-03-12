@@ -447,7 +447,12 @@ async def stream_watsonx_completions(watsonx_payload, headers):
             response.raise_for_status()  # This will raise an HTTPError for 4xx/5xx responses
             async for chunk in response.aiter_bytes():
                 logger.debug(f"Received response from Watsonx.ai: {chunk}")
-                yield chunk
+                # yield chunk
+                for line in chunk.splitlines():
+                    if line.startswith(b"data:"):
+                        logger.debug(f"return line: {line[5:].strip()}")
+                        yield(line[5:].strip())
+                        yield("\n")
         except requests.exceptions.HTTPError as err:
             # Capture and log the full response from Watsonx.ai
             error_message = response.text  # Watsonx should return a more detailed error message
