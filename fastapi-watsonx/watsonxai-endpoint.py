@@ -453,32 +453,16 @@ async def stream_watsonx_completions(watsonx_payload, headers):
                     if line.startswith('data:'):
                         data_str = line[5:].strip()
                         try:
-                            data = json.loads(data_str)
-                            choices = data.get("choices", [])
-                            content = ""
-                            finish_reason = None
-                            index = None
+                            data_json = json.loads(data_str) # 去除"data:"前缀并解析JSON
+                            logger.debug(f"Received data: {data_json}")
 
-                            if choices:
-                                delta = choices[0].get("delta", {})
-                                content = delta.get("content", "")
-                                finish_reason = choices[0].get("finish_reason")
-                                index = choices[0].get("index")
+                            # 提取所需的信息并格式化输出
+                            output = f"id : {data_json.get('id', '')}\n"
+                            output += f"model: {data_json.get('model', '')}\n"
+                            output += f"choices: {data_json.get('choices', [])}\n"
+                            output += f"usage: {data_json.get('usage', {})}\n"
 
-                            chat_chunk = {
-                                "id": data.get("id",""),
-                                "choices": [{
-                                    "delta": {
-                                        "content": content
-                                    },
-                                    "finish_reason": finish_reason,
-                                    "index": index
-                                }],
-                                "created": data.get("created", ""),
-                                "usage": data.get("usage", {}),
-                                "model": data.get("model", "")
-                            }
-                            result = json.dumps(chat_chunk).encode('utf-8')
+                            result =  output.encode('utf-8') # 以字节流方式返回
                             logger.debug(f"yield response: {result}")
                             yield result
                             yield "\n"
