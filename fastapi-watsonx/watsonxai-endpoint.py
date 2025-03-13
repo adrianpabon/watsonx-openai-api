@@ -447,12 +447,44 @@ async def stream_watsonx_completions(watsonx_payload, headers):
             response.raise_for_status()  # This will raise an HTTPError for 4xx/5xx responses
             async for chunk in response.aiter_bytes():
                 logger.debug(f"Received response from Watsonx.ai: {chunk}")
-                # yield chunk
-                for line in chunk.splitlines():
-                    if line.startswith(b"data:"):
-                        logger.debug(f"return line: {line[5:].strip()}")
-                        yield(line[5:].strip())
-                        yield("\n")
+                chunk_str = chunk.decode('utf-8').strip()
+                for line in chunk_str.split('\n'):
+                    line = line.strip()
+                    if line.startswith('data:'):
+                        data_str = line[5:].strip()
+                        try:
+                            data = json.loads(data_str)
+                            choices = data.get("choices", [])
+                            content = ""
+                            finish_reason = None
+                            index = None
+
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content", "")
+                                finish_reason = choices[0].get("finish_reason")
+                                index = choices[0].get("index")
+
+                            chat_chunk = {
+                                "id": data.get("id",""),
+                                "choices": [{
+                                    "delta": {
+                                        "content": content
+                                    },
+                                    "finish_reason": finish_reason,
+                                    "index": index
+                                }],
+                                "created": data.get("created", ""),
+                                "usage": data.get("usage", {}),
+                                "model": data.get("model", "")
+                            }
+                            result = json.dumps(chat_chunk).encode('utf-8')
+                            logger.debug(f"yield response: {result}")
+                            yield result
+                            yield "\n"
+                        except json.JSONDecodeError as e:
+                            logger.error(f"JSONDecodeError: {e}, data: {data_str}")
+                            continue #跳过解析失败的行
         except requests.exceptions.HTTPError as err:
             # Capture and log the full response from Watsonx.ai
             error_message = response.text  # Watsonx should return a more detailed error message
