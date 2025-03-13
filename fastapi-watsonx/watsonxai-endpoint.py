@@ -447,28 +447,29 @@ async def stream_watsonx_completions(watsonx_payload, headers):
             response.raise_for_status()  # This will raise an HTTPError for 4xx/5xx responses
             async for chunk in response.aiter_bytes():
                 logger.debug(f"Received response from Watsonx.ai: {chunk}")
-                chunk_str = chunk.decode('utf-8').strip()
-                for line in chunk_str.split('\n'):
-                    line = line.strip()
-                    if line.startswith('data:'):
-                        data_str = line[5:].strip()
-                        try:
-                            data_json = json.loads(data_str) # 去除"data:"前缀并解析JSON
-                            logger.debug(f"Received data: {data_json}")
+                yield chunk
+                # chunk_str = chunk.decode('utf-8').strip()
+                # for line in chunk_str.split('\n'):
+                #     line = line.strip()
+                #     if line.startswith('data:'):
+                #         data_str = line[5:].strip()
+                #         try:
+                #             data_json = json.loads(data_str) # 去除"data:"前缀并解析JSON
+                #             logger.debug(f"Received data: {data_json}")
 
-                            # 提取所需的信息并格式化输出
-                            output = f"id : {data_json.get('id', '')}\n"
-                            output += f"model: {data_json.get('model', '')}\n"
-                            output += f"choices: {data_json.get('choices', [])}\n"
-                            output += f"usage: {data_json.get('usage', {})}\n"
+                #             # 提取所需的信息并格式化输出
+                #             output = f"id : {data_json.get('id', '')}\n"
+                #             output += f"model: {data_json.get('model', '')}\n"
+                #             output += f"choices: {data_json.get('choices', [])}\n"
+                #             output += f"usage: {data_json.get('usage', {})}\n"
 
-                            result =  output.encode('utf-8') # 以字节流方式返回
-                            logger.debug(f"yield response: {result}")
-                            yield result
-                            yield "\n"
-                        except json.JSONDecodeError as e:
-                            logger.error(f"JSONDecodeError: {e}, data: {data_str}")
-                            continue #跳过解析失败的行
+                #             result =  output.encode('utf-8') # 以字节流方式返回
+                #             logger.debug(f"yield response: {result}")
+                #             yield result
+                #             yield "\n"
+                #         except json.JSONDecodeError as e:
+                #             logger.error(f"JSONDecodeError: {e}, data: {data_str}")
+                #             continue #跳过解析失败的行
         except requests.exceptions.HTTPError as err:
             # Capture and log the full response from Watsonx.ai
             error_message = response.text  # Watsonx should return a more detailed error message
