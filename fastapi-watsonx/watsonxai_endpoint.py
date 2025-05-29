@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import StreamingResponse
 import requests
 import httpx
@@ -11,7 +11,10 @@ from tabulate import tabulate
 from ibm_watsonx_ai import APIClient, Credentials
 from llama_index.core.llms import ChatMessage
 from llama_index.llms.ibm import WatsonxLLM
+from dotenv import load_dotenv
+from typing import Optional
 
+load_dotenv()
 app = FastAPI()
 
 # Function to check if the app is running inside Docker
@@ -259,9 +262,32 @@ def convert_watsonx_to_openai_format(watsonx_data):
     }
 
 
-# FastAPI route for /v1/models
+# FastAPI route for /v1/models (Standard OpenAI endpoint)
+@app.get("/v1/models")
+async def fetch_models_standard(authorization: Optional[str] = Header(None)):
+    # Validate OpenAI API key (but ignore it for compatibility)
+    validate_openai_api_key(authorization)
+    
+    logger.info("get the model list (standard OpenAI endpoint)")
+    try:
+        models = get_watsonx_models()  # Fetch the Watsonx models data
+        logger.debug(f"Available models: {models}")
+
+        # Convert Watsonx output to OpenAI-like format
+        openai_like_models = convert_watsonx_to_openai_format(models)
+
+        # Return the OpenAI-like formatted models
+        return openai_like_models
+    except Exception as err:
+        logger.error(f"Error fetching models: {err}")
+        raise HTTPException(status_code=500, detail=f"Error fetching models: {err}")
+
+# FastAPI route for /v1/chat/models
 @app.get("/v1/chat/models")
-async def fetch_models():
+async def fetch_models(authorization: Optional[str] = Header(None)):
+    # Validate OpenAI API key (but ignore it for compatibility)
+    validate_openai_api_key(authorization)
+    
     logger.info("get the model list")
     try:
         models = get_watsonx_models()  # Fetch the Watsonx models data
@@ -278,7 +304,10 @@ async def fetch_models():
 
 # FastAPI route for /v1/models/{model_id}
 @app.get("/v1/chat/models/{model_id}")
-async def fetch_model_by_id(model_id: str):
+async def fetch_model_by_id(model_id: str, authorization: Optional[str] = Header(None)):
+    # Validate OpenAI API key (but ignore it for compatibility)
+    validate_openai_api_key(authorization)
+    
     logger.info(f"get the model with id {model_id}")
     try:
         # Fetch the full list of models from Watsonx
@@ -311,7 +340,10 @@ async def fetch_model_by_id(model_id: str):
         raise HTTPException(status_code=500, detail=f"Error fetching model by ID: {err}")
 
 @app.post("/v1/completions")
-async def watsonx_completions(request: Request):
+async def watsonx_completions(request: Request, authorization: Optional[str] = Header(None)):
+    # Validate OpenAI API key (but ignore it for compatibility)
+    validate_openai_api_key(authorization)
+    
     logger.info("Received a Watsonx completion request.")
 
     # Parse the incoming request as JSON
@@ -499,7 +531,10 @@ async def non_stream_watsonx_completions(watsonx_payload, headers):
     return watsonx_data
 
 @app.post("/v1/chat/completions")
-async def watsonx_completions(request: Request):
+async def watsonx_completions(request: Request, authorization: Optional[str] = Header(None)):
+    # Validate OpenAI API key (but ignore it for compatibility)
+    validate_openai_api_key(authorization)
+    
     logger.info("Received a Watsonx chat completion request.")
     # Parse the incoming request as JSON
     try:
@@ -575,7 +610,10 @@ async def watsonx_completions(request: Request):
 
 
 @app.post("/v1/llamaindex/chat/completions")
-async def watsonx_chat_completions(request: Request):
+async def watsonx_chat_completions(request: Request, authorization: Optional[str] = Header(None)):
+    # Validate OpenAI API key (but ignore it for compatibility)
+    validate_openai_api_key(authorization)
+    
     logger.info("Received a Watsonx chat completion request.")
     # Parse the incoming request as JSON
     try:
@@ -622,3 +660,21 @@ async def watsonx_chat_completions(request: Request):
     # for chunk in await watsonx_llm.stream_chat(messages):
     #     print(chunk.delta, end="")
     #     yield chunk.delta
+
+# Function to validate OpenAI API key (but ignore it for compatibility)
+def validate_openai_api_key(authorization: Optional[str] = None):
+    """
+    Validates the OpenAI API key format but doesn't enforce it.
+    This allows N8N and other OpenAI-compatible clients to work seamlessly.
+    """
+    if authorization:
+        if authorization.startswith("Bearer "):
+            api_key = authorization[7:]  # Remove "Bearer " prefix
+            logger.debug(f"Received API key (ignored for compatibility): {api_key[:10]}...")
+            return True
+        else:
+            logger.warning("Authorization header present but doesn't start with 'Bearer '")
+    else:
+        logger.debug("No Authorization header provided (OpenAI-style API key not required)")
+    
+    return True  # Always return True since we don't actually validate the key
