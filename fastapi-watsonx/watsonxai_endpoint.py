@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 import requests
 import httpx
@@ -12,9 +12,9 @@ from ibm_watsonx_ai import APIClient, Credentials
 from llama_index.core.llms import ChatMessage
 from llama_index.llms.ibm import WatsonxLLM
 from dotenv import load_dotenv
-from typing import Optional
 
 load_dotenv()
+
 app = FastAPI()
 
 # Function to check if the app is running inside Docker
@@ -262,32 +262,9 @@ def convert_watsonx_to_openai_format(watsonx_data):
     }
 
 
-# FastAPI route for /v1/models (Standard OpenAI endpoint)
-@app.get("/v1/models")
-async def fetch_models_standard(authorization: Optional[str] = Header(None)):
-    # Validate OpenAI API key (but ignore it for compatibility)
-    validate_openai_api_key(authorization)
-    
-    logger.info("get the model list (standard OpenAI endpoint)")
-    try:
-        models = get_watsonx_models()  # Fetch the Watsonx models data
-        logger.debug(f"Available models: {models}")
-
-        # Convert Watsonx output to OpenAI-like format
-        openai_like_models = convert_watsonx_to_openai_format(models)
-
-        # Return the OpenAI-like formatted models
-        return openai_like_models
-    except Exception as err:
-        logger.error(f"Error fetching models: {err}")
-        raise HTTPException(status_code=500, detail=f"Error fetching models: {err}")
-
-# FastAPI route for /v1/chat/models
+# FastAPI route for /v1/models
 @app.get("/v1/chat/models")
-async def fetch_models(authorization: Optional[str] = Header(None)):
-    # Validate OpenAI API key (but ignore it for compatibility)
-    validate_openai_api_key(authorization)
-    
+async def fetch_models():
     logger.info("get the model list")
     try:
         models = get_watsonx_models()  # Fetch the Watsonx models data
@@ -304,10 +281,7 @@ async def fetch_models(authorization: Optional[str] = Header(None)):
 
 # FastAPI route for /v1/models/{model_id}
 @app.get("/v1/chat/models/{model_id}")
-async def fetch_model_by_id(model_id: str, authorization: Optional[str] = Header(None)):
-    # Validate OpenAI API key (but ignore it for compatibility)
-    validate_openai_api_key(authorization)
-    
+async def fetch_model_by_id(model_id: str):
     logger.info(f"get the model with id {model_id}")
     try:
         # Fetch the full list of models from Watsonx
@@ -340,10 +314,7 @@ async def fetch_model_by_id(model_id: str, authorization: Optional[str] = Header
         raise HTTPException(status_code=500, detail=f"Error fetching model by ID: {err}")
 
 @app.post("/v1/completions")
-async def watsonx_completions(request: Request, authorization: Optional[str] = Header(None)):
-    # Validate OpenAI API key (but ignore it for compatibility)
-    validate_openai_api_key(authorization)
-    
+async def watsonx_completions(request: Request):
     logger.info("Received a Watsonx completion request.")
 
     # Parse the incoming request as JSON
@@ -378,6 +349,17 @@ async def watsonx_completions(request: Request, authorization: Optional[str] = H
     stream = request_data.get("stream", False)
     seed = request_data.get("seed", None)
     top_p = request_data.get("top_p", 1)
+
+    # Handle tool calling parameters that n8n/LangChain might send
+    tools = request_data.get("tools", None)
+    functions = request_data.get("functions", None)  # Legacy functions parameter
+    tool_choice = request_data.get("tool_choice", None)
+    function_call = request_data.get("function_call", None)  # Legacy function_call parameter
+    
+    # Log if tool calling is being attempted
+    if tools or functions or tool_choice or function_call:
+        logger.info(f"Tool calling detected - tools: {tools}, functions: {functions}, tool_choice: {tool_choice}, function_call: {function_call}")
+        logger.warning("Tool calling is not fully supported by Watsonx. Converting to regular chat completion.")
 
     # Debugging: Log the provided parameters and their sources
     logger.debug("Parameter source debug:")
@@ -519,6 +501,67 @@ async def non_stream_watsonx_completions(watsonx_payload, headers):
         response.raise_for_status()  # This will raise an HTTPError for 4xx/5xx responses
         watsonx_data = response.json()
         logger.debug(f"Received response from Watsonx.ai: {json.dumps(watsonx_data, indent=4)}")
+        
+        # Convert Watsonx response to OpenAI chat completions format
+        openai_response = {
+            "id": f"chatcmpl-{str(uuid.uuid4())[:12]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": watsonx_payload.get("model_id", "ibm/granite-20b-multilingual"),
+            "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+        }
+        
+        # Extract choices from Watsonx response
+        choices = watsonx_data.get("choices", [])
+        if choices:
+            for i, choice in enumerate(choices):
+                message_content = choice.get("message", {}).get("content", "")
+                finish_reason = choice.get("finish_reason", "stop")
+                
+                openai_choice = {
+                    "index": i,
+                    "message": {
+                        "role": "assistant",
+                        "content": message_content,
+                        "tool_calls": None,
+                        "function_call": None
+                    },
+                    "logprobs": None,
+                    "finish_reason": finish_reason
+                }
+                openai_response["choices"].append(openai_choice)
+        else:
+            # Fallback: create a single choice with empty content
+            openai_response["choices"] = [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": None,
+                    "function_call": None
+                },
+                "logprobs": None,
+                "finish_reason": "stop"
+            }]
+        
+        # Extract usage information if available
+        usage = watsonx_data.get("usage", {})
+        if usage:
+            openai_response["usage"] = {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0)
+            }
+        
+        logger.debug(f"Converted to OpenAI format: {json.dumps(openai_response, indent=4)}")
+        return openai_response
+        
     except requests.exceptions.HTTPError as err:
         # Capture and log the full response from Watsonx.ai
         error_message = response.text  # Watsonx should return a more detailed error message
@@ -528,13 +571,9 @@ async def non_stream_watsonx_completions(watsonx_payload, headers):
         # Generic request exception handling
         logger.error(f"RequestException: {err}")
         raise HTTPException(status_code=500, detail=f"Error calling Watsonx.ai: {err}")
-    return watsonx_data
 
 @app.post("/v1/chat/completions")
-async def watsonx_completions(request: Request, authorization: Optional[str] = Header(None)):
-    # Validate OpenAI API key (but ignore it for compatibility)
-    validate_openai_api_key(authorization)
-    
+async def watsonx_completions(request: Request):
     logger.info("Received a Watsonx chat completion request.")
     # Parse the incoming request as JSON
     try:
@@ -545,12 +584,6 @@ async def watsonx_completions(request: Request, authorization: Optional[str] = H
         raise HTTPException(status_code=400, detail="Invalid JSON request body")
 
     messages = request_data.get("messages", [])
-    # Parse the incoming request as JSON
-    try:
-        request_data = await request.json()
-    except Exception as e:
-        logger.error(f"Error parsing request: {e}")
-        raise HTTPException(status_code=400, detail="Invalid JSON request body")
     # Rest of the parameters (model_id, max_tokens, etc.)
     model_id = request_data.get("model", "ibm/granite-20b-multilingual")  # Default model_id
     max_tokens = request_data.get("max_tokens", 2000)
@@ -566,6 +599,17 @@ async def watsonx_completions(request: Request, authorization: Optional[str] = H
     stream = request_data.get("stream", False)
     seed = request_data.get("seed", None)
     top_p = request_data.get("top_p", 1)
+
+    # Handle tool calling parameters that n8n/LangChain might send
+    tools = request_data.get("tools", None)
+    functions = request_data.get("functions", None)  # Legacy functions parameter
+    tool_choice = request_data.get("tool_choice", None)
+    function_call = request_data.get("function_call", None)  # Legacy function_call parameter
+    
+    # Log if tool calling is being attempted
+    if tools or functions or tool_choice or function_call:
+        logger.info(f"Tool calling detected - tools: {tools}, functions: {functions}, tool_choice: {tool_choice}, function_call: {function_call}")
+        logger.warning("Tool calling is not fully supported by Watsonx. Converting to regular chat completion.")
 
     # Debugging: Log the provided parameters and their sources
     logger.debug("Parameter source debug:")
@@ -610,10 +654,7 @@ async def watsonx_completions(request: Request, authorization: Optional[str] = H
 
 
 @app.post("/v1/llamaindex/chat/completions")
-async def watsonx_chat_completions(request: Request, authorization: Optional[str] = Header(None)):
-    # Validate OpenAI API key (but ignore it for compatibility)
-    validate_openai_api_key(authorization)
-    
+async def watsonx_chat_completions(request: Request):
     logger.info("Received a Watsonx chat completion request.")
     # Parse the incoming request as JSON
     try:
@@ -661,20 +702,35 @@ async def watsonx_chat_completions(request: Request, authorization: Optional[str
     #     print(chunk.delta, end="")
     #     yield chunk.delta
 
-# Function to validate OpenAI API key (but ignore it for compatibility)
-def validate_openai_api_key(authorization: Optional[str] = None):
-    """
-    Validates the OpenAI API key format but doesn't enforce it.
-    This allows N8N and other OpenAI-compatible clients to work seamlessly.
-    """
-    if authorization:
-        if authorization.startswith("Bearer "):
-            api_key = authorization[7:]  # Remove "Bearer " prefix
-            logger.debug(f"Received API key (ignored for compatibility): {api_key[:10]}...")
-            return True
-        else:
-            logger.warning("Authorization header present but doesn't start with 'Bearer '")
-    else:
-        logger.debug("No Authorization header provided (OpenAI-style API key not required)")
-    
-    return True  # Always return True since we don't actually validate the key
+# Add compatibility route for n8n which expects /v1/chat/chat/completions
+@app.post("/v1/chat/chat/completions")
+async def watsonx_chat_chat_completions(request: Request):
+    """Compatibility endpoint for n8n which expects /v1/chat/chat/completions path"""
+    logger.info("Received a Watsonx chat completion request via /v1/chat/chat/completions (n8n compatibility route).")
+    return await watsonx_completions(request)
+
+# Add compatibility routes for n8n which might expect /v1/chat/chat/models
+@app.get("/v1/chat/chat/models")
+async def fetch_models_compatibility():
+    """Compatibility endpoint for n8n which might expect /v1/chat/chat/models path"""
+    logger.info("Received models request via /v1/chat/chat/models (n8n compatibility route).")
+    return await fetch_models()
+
+@app.get("/v1/chat/chat/models/{model_id}")
+async def fetch_model_by_id_compatibility(model_id: str):
+    """Compatibility endpoint for n8n which might expect /v1/chat/chat/models/{model_id} path"""
+    logger.info(f"Received model by ID request via /v1/chat/chat/models/{model_id} (n8n compatibility route).")
+    return await fetch_model_by_id(model_id)
+
+# Add standard OpenAI endpoints that some clients expect
+@app.get("/v1/models")
+async def fetch_models_standard():
+    """Standard OpenAI models endpoint"""
+    logger.info("Received models request via /v1/models (standard OpenAI route).")
+    return await fetch_models()
+
+@app.get("/v1/models/{model_id}")
+async def fetch_model_by_id_standard(model_id: str):
+    """Standard OpenAI model by ID endpoint"""
+    logger.info(f"Received model by ID request via /v1/models/{model_id} (standard OpenAI route).")
+    return await fetch_model_by_id(model_id)
