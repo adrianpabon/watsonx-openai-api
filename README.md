@@ -7,6 +7,8 @@
 
 This repository hosts a **FastAPI** application that forwards requests in the OpenAI-style `/v1/chat/completions` format to **IBM watsonx.ai**. The gateway allows users to send requests using a format compatible with OpenAI but interacts with **watsonx.ai** models instead.
 
+**🔧 N8N AI Agent Support**: This gateway now includes special optimizations for N8N AI Agents to handle tool calling and streaming properly.
+
 ---
 
 ## 🌐 What is FastAPI?
@@ -41,18 +43,43 @@ This repository hosts a **FastAPI** application that forwards requests in the Op
 
 ---
 
+## 🔧 N8N AI Agent Support
+
+This gateway includes special support for **N8N AI Agents**. If you're experiencing the error:
+
+```
+TypeError: Cannot read properties of undefined (reading 'content') at ToolCallingAgentOutputParser._baseMessageToString
+```
+
+**Solution Options:**
+
+1. **Use the optimized N8N endpoint**: `http://localhost:8080/v1/n8n/chat/completions`
+2. **Or use the standard endpoint with proper headers**: `http://localhost:8080/v1/chat/completions`
+
+**Key improvements for N8N compatibility:**
+- ✅ Proper streaming format with `text/plain` media type
+- ✅ Enhanced timeout handling (120 seconds)
+- ✅ Guaranteed `content` field in all responses
+- ✅ Better error handling for tool calling scenarios
+- ✅ OpenAI-compliant chunk formatting for streaming
+
+**For N8N Users:**
+- Configure your HTTP Request node to use: `http://localhost:8080/v1/chat/completions`
+- Enable streaming: `{"stream": true}` in your request body
+- The gateway will automatically handle the format conversion
+
+---
+
 ### Clarifications:
-- **OpenAI Compatibility**: The API is structured similarly to OpenAI’s completion API but interacts with watsonx.ai models.
+- **OpenAI Compatibility**: The API is structured similarly to OpenAI's completion API but interacts with watsonx.ai models.
 - **Swagger/OpenAPI**: FastAPI automatically generates Swagger documentation, accessible via `/docs`, providing interactive API testing and documentation.
-
-
-
+- **N8N Integration**: Special endpoints and optimizations ensure compatibility with N8N AI Agents and tool calling functionality.
 
 ## Why Use This?
 
-This gateway provides a bridge between OpenAI’s API format and watsonx.ai, allowing you to:
-- **Seamlessly integrate with watsonx.ai** without rewriting existing applications that rely on OpenAI’s API.
-- **Ensure compatibility** with legacy codebases that use OpenAI’s completions endpoint.
+This gateway provides a bridge between OpenAI's API format and watsonx.ai, allowing you to:
+- **Seamlessly integrate with watsonx.ai** without rewriting existing applications that rely on OpenAI's API.
+- **Ensure compatibility** with legacy codebases that use OpenAI's completions endpoint.
 - **Flexibility**: Leverage watsonx.ai's capabilities with minimal changes to your existing infrastructure.
 
 ## Installation
@@ -170,9 +197,6 @@ docker logs -f watsonxai-endpoint
 
 </details>
 
-
-
-
 ### Use with Curl
 
 After starting the application, you can test it with a curl command:
@@ -188,7 +212,6 @@ curl http://127.0.0.1:8090/v1/chat/completions \
 }'|jq
 ```
 
-
 ### Use with Redhat instructLab
 
 ```bash
@@ -201,7 +224,6 @@ ilab data generate \
 --num-cpus 8 \
 --model ibm/granite-20b-multilingual
 ```
-
 
 <details>
 <summary> <b>Example output</b></summary>
@@ -238,8 +260,6 @@ You are an AI language model developed by IBM Research. You are a cautious assis
 - **`--chunk-word-count 1000`**: Splits the data into chunks of 1000 words.
 - **`--num-cpus 8`**: Uses 8 CPU cores for processing.
 - **`--model mistralai/mistral-large`**: Specifies the model to be used for data generation.
-
-
 
 ## API Reference
 

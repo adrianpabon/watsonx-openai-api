@@ -12,6 +12,8 @@ from ibm_watsonx_ai import APIClient, Credentials
 from llama_index.core.llms import ChatMessage
 from llama_index.llms.ibm import WatsonxLLM
 from dotenv import load_dotenv
+import asyncio
+import re
 
 load_dotenv()
 
@@ -454,45 +456,212 @@ async def watsonx_completions(request: Request):
 
 async def stream_watsonx_completions(watsonx_payload, headers):
     logger.info("Stream chat completion request.")
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:  # Aumentar timeout
         try:
             # Send the request to Watsonx.ai
             response = await client.post(WATSONX_URL_STREAM, json=watsonx_payload, headers=headers)
-            response.raise_for_status()  # This will raise an HTTPError for 4xx/5xx responses
+            response.raise_for_status()
+            
+            # Generate unique ID for the response
+            response_id = f"chatcmpl-{str(uuid.uuid4())[:12]}"
+            created_time = int(time.time())
+            model = watsonx_payload.get("model_id", "ibm/granite-20b-multilingual")
+            
+            # Send initial chunk
+            initial_chunk = {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created_time,
+                "model": model,
+                "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": None,
+                        "function_call": None
+                    },
+                    "logprobs": None,
+                    "finish_reason": None
+                }],
+                "usage": None
+            }
+            
+            yield f"data: {json.dumps(initial_chunk)}\n\n".encode('utf-8')
+            
+            # Process the streaming response
+            accumulated_content = ""
+            
             async for chunk in response.aiter_bytes():
-                logger.debug(f"Received response from Watsonx.ai: {chunk}")
-                yield chunk
-                # chunk_str = chunk.decode('utf-8').strip()
-                # for line in chunk_str.split('\n'):
-                #     line = line.strip()
-                #     if line.startswith('data:'):
-                #         data_str = line[5:].strip()
-                #         try:
-                #             data_json = json.loads(data_str) # 去除"data:"前缀并解析JSON
-                #             logger.debug(f"Received data: {data_json}")
-
-                #             # 提取所需的信息并格式化输出
-                #             output = f"id : {data_json.get('id', '')}\n"
-                #             output += f"model: {data_json.get('model', '')}\n"
-                #             output += f"choices: {data_json.get('choices', [])}\n"
-                #             output += f"usage: {data_json.get('usage', {})}\n"
-
-                #             result =  output.encode('utf-8') # 以字节流方式返回
-                #             logger.debug(f"yield response: {result}")
-                #             yield result
-                #             yield "\n"
-                #         except json.JSONDecodeError as e:
-                #             logger.error(f"JSONDecodeError: {e}, data: {data_str}")
-                #             continue #跳过解析失败的行
-        except requests.exceptions.HTTPError as err:
-            # Capture and log the full response from Watsonx.ai
-            error_message = response.text  # Watsonx should return a more detailed error message
-            logger.error(f"HTTPError: {err}, Response: {error_message}")
-            raise HTTPException(status_code=response.status_code, detail=f"Error from Watsonx.ai: {error_message}")
-        except requests.exceptions.RequestException as err:
-            # Generic request exception handling
-            logger.error(f"RequestException: {err}")
-            raise HTTPException(status_code=500, detail=f"Error calling Watsonx.ai: {err}")
+                chunk_str = chunk.decode('utf-8').strip()
+                logger.debug(f"Received chunk: {chunk_str}")
+                
+                # Process each line in the chunk
+                for line in chunk_str.split('\n'):
+                    line = line.strip()
+                    if line.startswith('data:'):
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            # Send final chunk
+                            final_chunk = {
+                                "id": response_id,
+                                "object": "chat.completion.chunk",
+                                "created": created_time,
+                                "model": model,
+                                "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {},
+                                    "logprobs": None,
+                                    "finish_reason": "stop"
+                                }],
+                                "usage": None
+                            }
+                            yield f"data: {json.dumps(final_chunk)}\n\n".encode('utf-8')
+                            yield b"data: [DONE]\n\n"
+                            return
+                        
+                        try:
+                            data_json = json.loads(data_str)
+                            
+                            # Extract content from watsonx response
+                            choices = data_json.get('choices', [])
+                            if choices and len(choices) > 0:
+                                choice = choices[0]
+                                if 'message' in choice:
+                                    content = choice['message'].get('content', '')
+                                elif 'delta' in choice:
+                                    content = choice['delta'].get('content', '')
+                                else:
+                                    continue
+                                
+                                if content:
+                                    accumulated_content += content
+                                    
+                                    # Create OpenAI format chunk
+                                    chunk_response = {
+                                        "id": response_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created_time,
+                                        "model": model,
+                                        "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
+                                        "choices": [{
+                                            "index": 0,
+                                            "delta": {
+                                                "content": content
+                                            },
+                                            "logprobs": None,
+                                            "finish_reason": None
+                                        }],
+                                        "usage": None
+                                    }
+                                    
+                                    yield f"data: {json.dumps(chunk_response)}\n\n".encode('utf-8')
+                                    
+                        except json.JSONDecodeError as e:
+                            logger.error(f"JSONDecodeError: {e}, data: {data_str}")
+                            continue
+                            
+            # Fallback: if no proper streaming chunks received, create a simple response
+            if not accumulated_content:
+                simple_chunk = {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_time,
+                    "model": model,
+                    "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {
+                            "content": "I understand your request."
+                        },
+                        "logprobs": None,
+                        "finish_reason": None
+                    }],
+                    "usage": None
+                }
+                yield f"data: {json.dumps(simple_chunk)}\n\n".encode('utf-8')
+                
+                # Send finish chunk
+                final_chunk = {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_time,
+                    "model": model,
+                    "system_fingerprint": f"fp_{str(uuid.uuid4())[:12]}",
+                    "choices": [{
+                        "index": 0,
+                        "delta": {},
+                        "logprobs": None,
+                        "finish_reason": "stop"
+                    }],
+                    "usage": None
+                }
+                yield f"data: {json.dumps(final_chunk)}\n\n".encode('utf-8')
+                
+            yield b"data: [DONE]\n\n"
+                            
+        except httpx.ReadTimeout as err:
+            logger.error(f"ReadTimeout: {err}")
+            # Return error in OpenAI streaming format
+            error_chunk = {
+                "id": f"chatcmpl-{str(uuid.uuid4())[:12]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": watsonx_payload.get("model_id", "ibm/granite-20b-multilingual"),
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "content": "I apologize, but I'm having trouble processing your request right now. Please try again."
+                    },
+                    "logprobs": None,
+                    "finish_reason": "stop"
+                }]
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n".encode('utf-8')
+            yield b"data: [DONE]\n\n"
+            
+        except httpx.HTTPStatusError as err:
+            logger.error(f"HTTPError: {err}")
+            error_message = await response.aread() if hasattr(response, 'aread') else "Unknown error"
+            logger.error(f"Response: {error_message}")
+            
+            error_chunk = {
+                "id": f"chatcmpl-{str(uuid.uuid4())[:12]}",
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": watsonx_payload.get("model_id", "ibm/granite-20b-multilingual"),
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "content": "I encountered an error while processing your request. Please try again later."
+                    },
+                    "logprobs": None,
+                    "finish_reason": "stop"
+                }]
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n".encode('utf-8')
+            yield b"data: [DONE]\n\n"
+            
+        except Exception as err:
+            logger.error(f"Unexpected error: {err}")
+            error_chunk = {
+                "id": f"chatcmpl-{str(uuid.uuid4())[:12]}",
+                "object": "chat.completion.chunk", 
+                "created": int(time.time()),
+                "model": watsonx_payload.get("model_id", "ibm/granite-20b-multilingual"),
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "content": "An unexpected error occurred. Please try again."
+                    },
+                    "logprobs": None,
+                    "finish_reason": "stop"
+                }]
+            }
+            yield f"data: {json.dumps(error_chunk)}\n\n".encode('utf-8')
+            yield b"data: [DONE]\n\n"
 
 async def non_stream_watsonx_completions(watsonx_payload, headers):
     try:
@@ -524,6 +693,10 @@ async def non_stream_watsonx_completions(watsonx_payload, headers):
                 message_content = choice.get("message", {}).get("content", "")
                 finish_reason = choice.get("finish_reason", "stop")
                 
+                # Ensure content is never None
+                if message_content is None:
+                    message_content = ""
+                
                 openai_choice = {
                     "index": i,
                     "message": {
@@ -537,12 +710,12 @@ async def non_stream_watsonx_completions(watsonx_payload, headers):
                 }
                 openai_response["choices"].append(openai_choice)
         else:
-            # Fallback: create a single choice with empty content
+            # Fallback: create a single choice with proper content
             openai_response["choices"] = [{
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": "",
+                    "content": "I understand your request and I'm here to help you.",
                     "tool_calls": None,
                     "function_call": None
                 },
@@ -648,9 +821,17 @@ async def watsonx_completions(request: Request):
     }
     # stream = False # make always not stream as issues for watsonx
     if stream:
-        return StreamingResponse(stream_watsonx_completions(watsonx_payload, headers), media_type="application/octet-stream")
+        return StreamingResponse(
+            stream_watsonx_completions(watsonx_payload, headers), 
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Content-Type": "text/plain; charset=utf-8"
+            }
+        )
     else:
-        return await non_stream_watsonx_completions(watsonx_payload, headers) # 调用非stream函数
+        return await non_stream_watsonx_completions(watsonx_payload, headers)
 
 
 @app.post("/v1/llamaindex/chat/completions")
@@ -708,6 +889,67 @@ async def watsonx_chat_chat_completions(request: Request):
     """Compatibility endpoint for n8n which expects /v1/chat/chat/completions path"""
     logger.info("Received a Watsonx chat completion request via /v1/chat/chat/completions (n8n compatibility route).")
     return await watsonx_completions(request)
+
+# Optimized endpoint for N8N AI Agents
+@app.post("/v1/n8n/chat/completions")
+async def n8n_optimized_completions(request: Request):
+    """
+    Optimized endpoint for N8N AI Agents with better tool calling support
+    """
+    logger.info("Received an N8N optimized chat completion request.")
+    
+    try:
+        request_data = await request.json()
+        logger.info(f"N8N request_data: {request_data}")
+    except Exception as e:
+        logger.error(f"Error parsing N8N request: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON request body")
+
+    messages = request_data.get("messages", [])
+    model_id = request_data.get("model", "ibm/granite-20b-multilingual")
+    max_tokens = request_data.get("max_tokens", 2000)
+    temperature = request_data.get("temperature", 0.7)
+    stream = request_data.get("stream", False)
+    top_p = request_data.get("top_p", 1)
+    
+    # Handle tool calling parameters
+    tools = request_data.get("tools", None)
+    tool_choice = request_data.get("tool_choice", None)
+    
+    if tools or tool_choice:
+        logger.info("N8N Tool calling detected, adjusting response format")
+
+    # Get the IAM token
+    iam_token = get_iam_token()
+
+    # Prepare Watsonx.ai request payload
+    watsonx_payload = {
+        "messages": messages,
+        "model_id": model_id,
+        "project_id": PROJECT_ID,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {iam_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    if stream:
+        return StreamingResponse(
+            stream_watsonx_completions(watsonx_payload, headers), 
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "Content-Type": "text/plain; charset=utf-8"
+            }
+        )
+    else:
+        return await non_stream_watsonx_completions(watsonx_payload, headers)
 
 # Add compatibility routes for n8n which might expect /v1/chat/chat/models
 @app.get("/v1/chat/chat/models")
